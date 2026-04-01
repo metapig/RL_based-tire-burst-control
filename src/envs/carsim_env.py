@@ -2,9 +2,9 @@ import ctypes
 from os import name
 from typing import Iterable, Sequence, Tuple
 import numpy as np
-from lpvmpc import LPVMPC
-from parameters import vehicle_parameters
-from vs_solver import vs_solver
+from mpc.lpvmpc import LPVMPC
+from models.parameters import vehicle_parameters
+from src.utils.vs_solver import vs_solver
 import time
 
 
