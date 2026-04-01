@@ -4,12 +4,12 @@ import torch
 import random
 import time
 from torch.utils.tensorboard import SummaryWriter
-from carsim_env import CarSimEnv
-from lpvmpc import LPVMPC
-from PPO_agent_copy import PPO
-from parameters import vehicle_parameters
-from reward_model import compute_reward
-from utils import set_seed, Normalize, modify_run_all_par
+from src.envs.carsim_env import CarSimEnv
+from src.mpc.lpvmpc import LPVMPC
+from src.agents.PPO_agent import PPO
+from src.models.parameters import vehicle_parameters
+from src.models.reward_model import compute_reward
+from src.utils.utils import set_seed, Normalize, modify_run_all_par
 
 class TireBurstEnv(CarSimEnv): 
 

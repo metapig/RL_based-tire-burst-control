@@ -25,15 +25,15 @@ class PolicyNetContinuous(torch.nn.Module):
         torch.nn.init.constant_(self.fc.bias, 0)
 
         # ===== Mu 层（关键：小！！）=====
-        torch.nn.init.orthogonal_(self.fc_mu.weight, gain=0.01)
+        torch.nn.init.orthogonal_(self.fc_mu.weight, gain=0.0)
         torch.nn.init.constant_(self.fc_mu.bias, 0)
 
         # ===== Std 层（关键：不要大）=====
         torch.nn.init.constant_(self.fc_std.weight, 0)
-        torch.nn.init.constant_(self.fc_std.bias, 0.5)   
+        torch.nn.init.constant_(self.fc_std.bias, -1)   
 
         # ===== Action scale =====
-        self.register_buffer('action_scales', torch.tensor([1000]))
+        self.register_buffer('action_scales', torch.tensor([1, 1, 1]))
 
     def forward(self, x):
        x = F.relu(self.fc(x))
@@ -87,14 +87,14 @@ class PPO:
         start_episode = ckpt['episode'] + 1
 
     def select_action(self, state):
-        state = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(self.device)  # [1, state_dim]
-        mu, std = self.actor(state)  # [1, action_dim]
+        state = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(self.device) 
+        mu, std = self.actor(state)  
         dist = torch.distributions.Normal(mu, std)
-        action = dist.sample()       # [1, action_dim]
-        log_probs = dist.log_prob(action)  # 对 action_dim 求和, 结果 shape=[1]
+        action = mu#dist.sample()       
+        log_probs = dist.log_prob(action)  
 
         # 返回给环境的时候可以 squeeze batch 维
-        return action.squeeze(0).detach().cpu().numpy(), log_probs.item()
+        return action.squeeze(0).detach().cpu().numpy(), log_probs.sum(dim=1).item()
 
     def update(self, transition_dict):
         # states = torch.from_numpy(np.array(transition_dict['states'], dtype=np.float32)).to(self.device)
@@ -170,8 +170,8 @@ class PPO:
             mu, std = self.actor(states)
             dist = torch.distributions.Normal(mu, std)
             new_log_probs: torch.Tensor = dist.log_prob(actions).sum(dim=1)
+            
             ratio: torch.Tensor = torch.exp(new_log_probs - old_log_probs)
-
             # PPO clip ratio
             surr1: torch.Tensor = ratio * advantages
             surr2: torch.Tensor = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
