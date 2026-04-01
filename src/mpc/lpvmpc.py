@@ -1,6 +1,6 @@
 import casadi as ca
 import numpy as np
-from parameters import vehicle_parameters
+from src.models.parameters import vehicle_parameters
 
 class LPVMPC:
     def __init__(self, N=20, dt=0.1, params=vehicle_parameters):
