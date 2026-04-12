@@ -9,7 +9,7 @@ from src.agents.PPO_agent import PPO
 from src.models.parameters import vehicle_parameters
 from src.models.reward_model import compute_reward
 from src.utils.utils import set_seed, Normalize, modify_run_all_par
-
+# ranwokankanzmgaiff
 def initialize():
     p = argparse.ArgumentParser(description="PPO training for tire burst control")
     p.add_argument("--mode", type=str, default="test", help="train or test")
