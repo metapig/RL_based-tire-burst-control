@@ -12,21 +12,21 @@ from src.utils.utils import set_seed, Normalize, modify_run_all_par
 
 def initialize():
     p = argparse.ArgumentParser(description="PPO training for tire burst control")
-    p.add_argument("--mode", type=str, default="train", help="train or test")
+    p.add_argument("--mode", type=str, default="test", help="train or test")
     p.add_argument("--actor_learning_rate", type=float, default=1e-4, help="Learning rate for PPO agent")
     p.add_argument("--critic_learning_rate", type=float, default=1e-3, help="Learning rate for PPO agent")
     p.add_argument("--gamma", type=float, default=1, help="Discount factor for PPO agent")
     p.add_argument("--lmbda", type=float, default=0.95, help="GAE lambda for PPO agent")
     p.add_argument("--eps_clip", type=float, default=0.2, help="Clipping epsilon for PPO agent")
     p.add_argument("--K_epochs", type=int, default=4, help="Number of epochs for PPO update")
-    p.add_argument("--max_episodes", type=int, default=1000, help="Maximum number of training episodes")
+    p.add_argument("--max_episodes", type=int, default=1, help="Maximum number of training episodes")
     return p.parse_args()
 
 def test(env, mpc_controller, agent, inner_steps_per_control=1):
     writer = SummaryWriter(f"runs/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
     obs = env.reset()
     state = list(obs[:3])
-    state = Normalize(state) + list(env.mu)# 归一化状态输入    
+    state = Normalize(state) + list([env.mu, ])# 归一化状态输入    
     
     episode_return = 0
     K = 10
@@ -42,7 +42,7 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
                 alpha, log_prob = agent.select_action(state)
                 alpha = np.array(alpha).reshape(-1)
                 # print(f"Selected alpha: {alpha}")
-            #alpha = np.zeros(3)  # 测试阶段不使用RL输出的alpha，而是固定为0
+            alpha = np.zeros(3)  # 测试阶段不使用RL输出的alpha，而是固定为0
             alpha_Q = alpha[:2]           # (2,)
             alpha_R = alpha[2:].reshape(-1)  # (1,)
             action_mpc = mpc_controller.solve(obs, r_ref, -1, alpha_Q, alpha_R) # MPC用的是原始数据
@@ -51,12 +51,13 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
         next_obs, reward, done, info = env.step(action_mpc, alpha, inner_steps_per_control)
         obs = next_obs
         state = list(obs[:3])
-        state = Normalize(state) + list(env.mu) 
+        state = Normalize(state) + list([env.mu, ]) 
         episode_return += reward
 
         K += 1
         if K > 10:
             K = 0
+
     print(f"Test episode - Return: {episode_return:.3f}")
     
 def train(env, mpc_controller, agent, num_episodes, inner_steps_per_control=1):
