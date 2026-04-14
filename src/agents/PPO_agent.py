@@ -90,7 +90,7 @@ class PPO:
         state = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(self.device) 
         mu, std = self.actor(state)  
         dist = torch.distributions.Normal(mu, std)
-        action = mu#dist.sample()       
+        action = dist.sample()       
         log_probs = dist.log_prob(action)  
 
         # 返回给环境的时候可以 squeeze batch 维

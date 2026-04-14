@@ -18,7 +18,7 @@ def initialize():
     p.add_argument("--gamma", type=float, default=1, help="Discount factor for PPO agent")
     p.add_argument("--lmbda", type=float, default=0.95, help="GAE lambda for PPO agent")
     p.add_argument("--eps_clip", type=float, default=0.2, help="Clipping epsilon for PPO agent")
-    p.add_argument("--K_epochs", type=int, default=10, help="Number of epochs for PPO update")
+    p.add_argument("--K_epochs", type=int, default=4, help="Number of epochs for PPO update")
     p.add_argument("--max_episodes", type=int, default=1000, help="Maximum number of training episodes")
     return p.parse_args()
 
@@ -130,7 +130,7 @@ def train(env, mpc_controller, agent, num_episodes, inner_steps_per_control=1):
     writer.close()
 
 if __name__ == "__main__":
-    # set_seed(7)
+    set_seed(7)
     env = TireBurstEnv(sim_path="./simfile.sim")
     args = initialize()
     mpc_controller = LPVMPC(N=15, dt=0.02, params=vehicle_parameters)
