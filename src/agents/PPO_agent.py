@@ -14,9 +14,9 @@ def compute_advantage(gamma, lmbda, td_delta):
     return torch.tensor(advantage_list, dtype=torch.float).to(td_delta.device)
 
 class PolicyNetContinuous(torch.nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, env_dim,action_dim, hidden_dim=256):
         super(PolicyNetContinuous, self).__init__()
-        self.fc = torch.nn.Linear(state_dim, hidden_dim)
+        self.fc = torch.nn.Linear(state_dim + env_dim, hidden_dim)
         self.fc_mu = torch.nn.Linear(hidden_dim, action_dim)
         self.fc_std = torch.nn.Linear(hidden_dim, action_dim)
 
@@ -33,7 +33,7 @@ class PolicyNetContinuous(torch.nn.Module):
         torch.nn.init.constant_(self.fc_std.bias, -1)   
 
         # ===== Action scale =====
-        self.register_buffer('action_scales', torch.tensor([1, 1, 1]))
+        self.register_buffer('action_scales', torch.tensor([2, 2, 2]))
 
     def forward(self, x):
        x = F.relu(self.fc(x))
@@ -46,9 +46,9 @@ class PolicyNetContinuous(torch.nn.Module):
        return mu, std
 
 class valueNet(torch.nn.Module):
-    def __init__(self, state_dim, hidden_dim):
+    def __init__(self, state_dim, env_dim, hidden_dim):
         super(valueNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim, hidden_dim)
+        self.fc1 = torch.nn.Linear(state_dim + env_dim, hidden_dim)
         self.fc2 = torch.nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
@@ -57,10 +57,10 @@ class valueNet(torch.nn.Module):
         return v
     
 class PPO:
-    def __init__(self, state_dim, action_dim, hidden_dim, actor_lr,
+    def __init__(self, state_dim, env_dim, action_dim, hidden_dim, actor_lr,
                  critic_lr, gamma, lmbda, epochs, eps, device):
-        self.actor = PolicyNetContinuous(state_dim, action_dim, hidden_dim).to(device)
-        self.critic = valueNet(state_dim, hidden_dim).to(device)
+        self.actor = PolicyNetContinuous(state_dim, env_dim, action_dim, hidden_dim).to(device)
+        self.critic = valueNet(state_dim, env_dim, hidden_dim).to(device)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr = actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr = critic_lr)
         self.gamma = gamma
@@ -97,39 +97,6 @@ class PPO:
         return action.squeeze(0).detach().cpu().numpy(), log_probs.sum(dim=1).item()
 
     def update(self, transition_dict):
-        # states = torch.from_numpy(np.array(transition_dict['states'], dtype=np.float32)).to(self.device)
-        # actions = torch.from_numpy(np.array(transition_dict['actions'], dtype=np.float32)).to(self.device)
-        # rewards = torch.tensor(transition_dict['rewards'], dtype = torch.float).to(self.device)
-        # next_states = torch.from_numpy(np.array(transition_dict['next_states'], dtype=np.float32)).to(self.device)
-        # dones = torch.tensor(transition_dict['dones'], dtype = torch.float).to(self.device)
-        # old_log_probs = torch.tensor(transition_dict['log_probs'],dtype=torch.float32).to(device=self.device)
-
-        # td_targets = rewards.unsqueeze(1) + self.gamma * self.critic(next_states) * (1 - dones.unsqueeze(1))
-        # td_deltas = (td_targets - self.critic(states)).squeeze()  # (batch,) 而非 (batch, 1)
-        # advantages = compute_advantage(self.gamma, self.lmbda, td_deltas)
-        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-        # critic_loss = F.mse_loss(self.critic(states), td_targets.detach())
-        # self.critic_optimizer.zero_grad()
-        # critic_loss.backward()
-        # self.critic_optimizer.step()
-
-        # for _ in range(self.epochs):
-        #     mu, std = self.actor(states)
-        #     dist = torch.distributions.Normal(mu, std)
-        #     new_log_probs = dist.log_prob(actions).sum(axis=1)
-        #     ratio = torch.exp(new_log_probs - old_log_probs)
-        #     clip_frac = ((ratio > 1 + self.eps) | (ratio < 1 - self.eps)).float().mean()
-        #     print(f"[PPO] clip frac: {clip_frac:.3f}")
-
-        #     surr1 = ratio * advantages
-        #     surr2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
-
-        #     actor_loss = -torch.min(surr1, surr2).mean()
-        #     self.actor_optimizer.zero_grad()
-        #     actor_loss.backward()
-        #     self.actor_optimizer.step()
-
         states: torch.Tensor = torch.tensor(np.array(transition_dict["states"]), dtype=torch.float32, device=self.device)
         actions: torch.Tensor = torch.tensor(np.array(transition_dict["actions"]), dtype=torch.float32, device=self.device)
         rewards: torch.Tensor = torch.tensor(transition_dict["rewards"], dtype=torch.float32, device=self.device)

@@ -9,24 +9,24 @@ from src.agents.PPO_agent import PPO
 from src.models.parameters import vehicle_parameters
 from src.models.reward_model import compute_reward
 from src.utils.utils import set_seed, Normalize, modify_run_all_par
-# ranwokankanzmgaiff
+
 def initialize():
     p = argparse.ArgumentParser(description="PPO training for tire burst control")
-    p.add_argument("--mode", type=str, default="test", help="train or test")
+    p.add_argument("--mode", type=str, default="train", help="train or test")
     p.add_argument("--actor_learning_rate", type=float, default=1e-4, help="Learning rate for PPO agent")
     p.add_argument("--critic_learning_rate", type=float, default=1e-3, help="Learning rate for PPO agent")
     p.add_argument("--gamma", type=float, default=1, help="Discount factor for PPO agent")
     p.add_argument("--lmbda", type=float, default=0.95, help="GAE lambda for PPO agent")
     p.add_argument("--eps_clip", type=float, default=0.2, help="Clipping epsilon for PPO agent")
     p.add_argument("--K_epochs", type=int, default=10, help="Number of epochs for PPO update")
-    p.add_argument("--max_episodes", type=int, default=1, help="Maximum number of training episodes")
+    p.add_argument("--max_episodes", type=int, default=1000, help="Maximum number of training episodes")
     return p.parse_args()
 
 def test(env, mpc_controller, agent, inner_steps_per_control=1):
     writer = SummaryWriter(f"runs/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
     obs = env.reset()
     state = list(obs[:3])
-    state = Normalize(state)  # 归一化状态输入    
+    state = Normalize(state) + list(env.mu)# 归一化状态输入    
     
     episode_return = 0
     K = 10
@@ -51,7 +51,7 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
         next_obs, reward, done, info = env.step(action_mpc, alpha, inner_steps_per_control)
         obs = next_obs
         state = list(obs[:3])
-        state = Normalize(state)
+        state = Normalize(state) + list(env.mu) 
         episode_return += reward
 
         K += 1
@@ -66,7 +66,7 @@ def train(env, mpc_controller, agent, num_episodes, inner_steps_per_control=1):
     for ep in range(num_episodes):
         obs = env.reset() # 用于仿真迭代
         state = list(obs[:3]) # 用于训练RL
-        state = Normalize(state)
+        state = Normalize(state) + list([env.mu, ]) # 归一化状态输入
 
         K = 10
         action_mpc = 0 # 初始化动作, RL返回的是nparray
@@ -93,10 +93,9 @@ def train(env, mpc_controller, agent, num_episodes, inner_steps_per_control=1):
             next_obs, reward, done, info = env.step(action_mpc, alpha, inner_steps_per_control)
             
             next_state = list(next_obs[:3])
-            next_state = Normalize(next_state)
+            next_state = Normalize(next_state) + list([env.mu, ])
             K_step_reward += reward
             episode_return += reward 
-
 
             if obs[5] != 0 and K == 10:  # 在动作更新的时间步记录transition
                 transition_dict['states'].append(decision_state)
@@ -136,7 +135,7 @@ if __name__ == "__main__":
     args = initialize()
     mpc_controller = LPVMPC(N=15, dt=0.02, params=vehicle_parameters)
     agent = PPO(
-        state_dim=3, action_dim=3, hidden_dim=256,
+        state_dim=3, env_dim=1, action_dim=3, hidden_dim=256,
         actor_lr=args.actor_learning_rate, critic_lr=args.critic_learning_rate,
         gamma=args.gamma, lmbda=args.lmbda, epochs=args.K_epochs, eps=args.eps_clip,
         device=torch.device("cuda") if torch.cuda.is_available() else "cpu")
