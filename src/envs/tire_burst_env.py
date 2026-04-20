@@ -17,7 +17,7 @@ class TireBurstEnv(CarSimEnv):
         # self.m = np.random.uniform(1000, 2000)
         # self.Iz = np.random.uniform(2000, 4000)
 
-
+        # RR, FR, FL, RL 
         # -2, -1, 1, 2
         # 100, 80, 70, 90
         # 0.3, 0.5, 0.7, 1
