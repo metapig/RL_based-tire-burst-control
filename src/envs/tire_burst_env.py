@@ -11,12 +11,16 @@ class TireBurstEnv(CarSimEnv):
 
     def reset(self):
         par_path = r"D:\CarSim2023\Databases\Results\Run_60366987-856d-45b1-b359-7939e85af520\Run_all.par"
-        self.burst_tire = -1#random.choice([-2, -1, 1, 2])
-        self.v = 70#np.random.uniform(70, 100)
-        self.mu = 0.4#np.random.uniform(0.2, 1.0)
+        self.burst_tire = 2#random.choice([-2, -1, 1, 2])
+        self.v = 90#np.random.uniform(70, 100)
+        self.mu = 1#np.random.uniform(0.2, 1.0)
         # self.m = np.random.uniform(1000, 2000)
         # self.Iz = np.random.uniform(2000, 4000)
 
+
+        # -2, -1, 1, 2
+        # 100, 80, 70, 90
+        # 0.3, 0.5, 0.7, 1
         # 这里做domain randomization，直接在环境层面设置 VS 的参数
         modify_run_all_par(self.v, self.mu, par_path)
 

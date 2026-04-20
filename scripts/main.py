@@ -23,7 +23,7 @@ def initialize():
     return p.parse_args()
 
 def test(env, mpc_controller, agent, inner_steps_per_control=1):
-    writer = SummaryWriter(f"runs/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
+    writer = SummaryWriter(f"runs/tests/RL/RL_ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
     obs = env.reset()
     state = list(obs[:3])
     state = Normalize(state) + list([env.mu, ])# 归一化状态输入    
@@ -42,10 +42,10 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
                 alpha, log_prob = agent.select_action(state)
                 alpha = np.array(alpha).reshape(-1)
                 # print(f"Selected alpha: {alpha}")
-            alpha = np.zeros(3)  # 测试阶段不使用RL输出的alpha，而是固定为0
+            #alpha = np.zeros(3)  # 测试阶段不使用RL输出的alpha，而是固定为0
             alpha_Q = alpha[:2]           # (2,)
             alpha_R = alpha[2:].reshape(-1)  # (1,)
-            action_mpc = mpc_controller.solve(obs, r_ref, -1, alpha_Q, alpha_R) # MPC用的是原始数据
+            action_mpc = mpc_controller.solve(obs, r_ref, 2, alpha_Q, alpha_R) # MPC用的是原始数据
             writer.add_scalar(f"Action_test", action_mpc, env.t_current*1000)
 
         next_obs, reward, done, info = env.step(action_mpc, alpha, inner_steps_per_control)
@@ -82,10 +82,10 @@ def train(env, mpc_controller, agent, num_episodes, inner_steps_per_control=1):
                 if K == 10:  # 每隔1个时间步选择一次动作
                     decision_state = state.copy()
                     alpha, log_prob = agent.select_action(state)
-                    # print(alpha)
+                    #print(alpha)
                     alpha = np.array(alpha).reshape(-1)
                     K_step_reward = 0
-
+ 
                 alpha_Q = alpha[:2]           # (2,)
                 alpha_R = alpha[2:].reshape(-1)  # (1,)
                 action_mpc = mpc_controller.solve(obs, r_ref, -1, alpha_Q, alpha_R) # MPC用的是原始数据
