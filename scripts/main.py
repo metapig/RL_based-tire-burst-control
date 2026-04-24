@@ -8,7 +8,7 @@ from src.mpc.lpvmpc import LPVMPC
 from src.agents.PPO_agent import PPO
 from src.models.parameters import vehicle_parameters
 from src.models.reward_model import compute_reward
-from src.utils.utils import set_seed, Normalize, modify_run_all_par
+from src.utils.utils import set_seed, Normalize, modify_run_all_par, plot_alpha
 
 def initialize():
     p = argparse.ArgumentParser(description="PPO training for tire burst control")
@@ -33,6 +33,8 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
     action_mpc = 0
     alpha = np.zeros(3)
     r_ref = np.zeros((2, mpc_controller.N))
+    alpha_list = []
+    alpha_time = []
 
     done = False
     while not done:
@@ -41,6 +43,9 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
             if K == 10: 
                 alpha, log_prob = agent.select_action(state)
                 alpha = np.array(alpha).reshape(-1)
+                alpha_list.append(alpha)
+                alpha_time.append(env.t_current)
+
                 # print(f"Selected alpha: {alpha}")
             #alpha = np.zeros(3)  # 测试阶段不使用RL输出的alpha，而是固定为0
             alpha_Q = alpha[:2]           # (2,)
@@ -59,6 +64,8 @@ def test(env, mpc_controller, agent, inner_steps_per_control=1):
             K = 0
 
     print(f"Test episode - Return: {episode_return:.3f}")
+
+    plot_alpha(alpha_list, alpha_time, "alpha_plot.png")
     
 def train(env, mpc_controller, agent, num_episodes, inner_steps_per_control=1):
     writer = SummaryWriter(f"runs/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
