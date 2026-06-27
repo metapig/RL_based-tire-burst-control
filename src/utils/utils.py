@@ -1,4 +1,5 @@
 import random
+import re
 import numpy as np
 import torch
 
@@ -18,6 +19,14 @@ def Normalize(state):
     training_state[2] = state[2] / 4
     return training_state
 
+def build_policy_state(obs, env_feature):
+    """Build PPO input from normalized vehicle state and environment feature."""
+    if np.isscalar(env_feature):
+        env_values = [float(env_feature)]
+    else:
+        env_values = np.asarray(env_feature, dtype=np.float32).reshape(-1).tolist()
+    return Normalize(list(obs[:3])) + env_values
+
 def compute_advantage(gamma, lmbda, td_delta):
 
     advantages = []
@@ -31,8 +40,6 @@ def compute_advantage(gamma, lmbda, td_delta):
     advantages.reverse()
 
     return torch.stack(advantages).squeeze()
-
-import re
 
 def modify_run_all_par(v, mu, file_path):
     with open(file_path, "r") as f:
