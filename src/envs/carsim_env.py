@@ -16,6 +16,19 @@ def _load_dll_with_fallback(path: str):
         return ctypes.WinDLL(path)
 
 
+def _classify_episode_end(
+    code: int,
+    t_current: float,
+    t_stop: float,
+    solver_error: bool = False,
+):
+    """Separate a true solver termination from a time-limit truncation."""
+    reached_time_limit = t_stop > 0.0 and t_current >= t_stop - 1e-9
+    terminated = solver_error or (code != 0 and not reached_time_limit)
+    truncated = reached_time_limit and not solver_error
+    return terminated, truncated
+
+
 class CarSimEnv:
     """Wrapper that exposes the VS solver with a gym-like interface."""
 
@@ -157,23 +170,40 @@ class CarSimEnv:
                 break
 
         self.t_current = t_current
-        info = {"return_code": code}
+        solver_error = False
+        if code != 0:
+            try:
+                solver_error = bool(solver.dll_handle.vs_error_occurred())
+            except Exception:
+                # If VS cannot classify a non-zero return, fail safely rather
+                # than bootstrapping through a potentially invalid state.
+                solver_error = True
+
+        terminated, truncated = _classify_episode_end(
+            code, self.t_current, t_stop, solver_error
+        )
+        info = {
+            "return_code": code,
+            "terminated": terminated,
+            "truncated": truncated,
+        }
 
         # 处理 VS 返回码和错误信息
         if code != 0:
             try:
-                if solver.dll_handle.vs_error_occurred():
+                if solver_error:
                     msg_ptr = solver.dll_handle.vs_get_error_message()
                     if msg_ptr:
                         info["error"] = ctypes.c_char_p(msg_ptr).value.decode("ascii", errors="ignore")
+                    else:
+                        info["error"] = "VS reported an unspecified solver error"
+                elif truncated:
+                    info["end_reason"] = "time_limit"
                 else:
                     info["end_reason"] = "model_requested_stop"
             except Exception:
                 info["error"] = "Non-zero return; error classification failed"
-            self.done = True
-
-        if t_stop > 0.0 and self.t_current >= t_stop:
-            self.done = True
+        self.done = terminated or truncated
 
         if self.done:
             # 正确终止这次 run
