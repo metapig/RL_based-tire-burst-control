@@ -1,7 +1,15 @@
+from pathlib import Path
+
 import numpy as np
+
 from src.envs.carsim_env import CarSimEnv
 from src.models.reward_model import compute_reward
-from src.utils.utils import modify_run_all_par
+from src.utils.utils import modify_run_all_par, replace_tire_force_tables
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BURST_SEVERITY_LEVELS = (0.25, 0.50, 0.75)
+BURST_TIRE_CODES = (-2, -1, 1, 2)
 
 class TireBurstEnv(CarSimEnv): 
 
@@ -13,10 +21,26 @@ class TireBurstEnv(CarSimEnv):
         self.mu_max = 1.0
         self.curriculum_stage = 0
         self.previous_action = None
+        self.burst_table_root = PROJECT_ROOT / "generated_tire_tables"
+        self.burst_tire_par_files = {
+            "Fx": Path(
+                r"D:\CarSim2023\Databases\Tires\Fx\TireFx_59ff8167-"
+                r"24e0-484d-845e-6946e5597b34.par"
+            ),
+            "Fy": Path(
+                r"D:\CarSim2023\Databases\Tires\Fy\TireFy_efd067b1-"
+                r"5b7f-406a-830a-324252abc172.par"
+            ),
+            "Mz": Path(
+                r"D:\CarSim2023\Databases\Tires\Mz\TireMz_c3c085d8-"
+                r"b8db-4f26-a6e4-032014e75fa1.par"
+            ),
+        }
 
     def reset(self, ep):
         par_path = r"D:\CarSim2023\Databases\Results\Run_60366987-856d-45b1-b359-7939e85af520\Run_all.par"
-        self.burst_tire = -1 #random.choice([-2, -1, 1, 2])
+        self.burst_tire = int(np.random.choice(BURST_TIRE_CODES))
+        self.burst_severity = float(np.random.choice(BURST_SEVERITY_LEVELS))
 
         # Focus most samples near the current difficulty boundary. A small
         # replay fraction keeps the policy from forgetting easier conditions.
@@ -40,6 +64,13 @@ class TireBurstEnv(CarSimEnv):
 
         # 这里做domain randomization，直接在环境层面设置 VS 的参数
         modify_run_all_par(self.v, self.mu, par_path)
+        severity_dir = self.burst_table_root / (
+            f"burst_{round(100 * self.burst_severity):03d}"
+        )
+        replace_tire_force_tables(
+            severity_dir,
+            self.burst_tire_par_files,
+        )
 
         self.previous_action = None
         initial_export = super().reset()
