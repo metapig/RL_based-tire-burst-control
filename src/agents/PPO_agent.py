@@ -5,21 +5,12 @@ import numpy as np
 from typing import Dict
 
 from src.models.parameters import ACTION_SCALES
-
-
-def compute_advantage(gamma, lmbda, td_delta):
-    td_delta = td_delta.detach().flatten()
-    advantages = torch.empty_like(td_delta)
-    advantage = torch.zeros((), dtype=td_delta.dtype, device=td_delta.device)
-    for index in range(td_delta.numel() - 1, -1, -1):
-        advantage = gamma * lmbda * advantage + td_delta[index]
-        advantages[index] = advantage
-    return advantages
+from src.utils.utils import compute_advantage
 
 class PolicyNetContinuous(torch.nn.Module):
-    def __init__(self, state_dim, env_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, latent_dim, action_dim, hidden_dim=256):
         super(PolicyNetContinuous, self).__init__()
-        self.fc = torch.nn.Linear(state_dim + env_dim, hidden_dim)
+        self.fc = torch.nn.Linear(state_dim + latent_dim, hidden_dim)
         self.fc_mu = torch.nn.Linear(hidden_dim, action_dim)
         self.fc_std = torch.nn.Linear(hidden_dim, action_dim)
 
@@ -33,7 +24,7 @@ class PolicyNetContinuous(torch.nn.Module):
 
         # ===== Std 层（关键：不要大）=====
         torch.nn.init.constant_(self.fc_std.weight, 0)
-        torch.nn.init.constant_(self.fc_std.bias, -1.5)
+        torch.nn.init.constant_(self.fc_std.bias, 0)
 
         # Physical limits: steering angle and four wheel control moments.
         self.register_buffer(
@@ -45,7 +36,7 @@ class PolicyNetContinuous(torch.nn.Module):
        mu = self.fc_mu(x)
 
        log_std = self.fc_std(x)
-       log_std = torch.clamp(log_std, -5, 0.5)
+       log_std = torch.clamp(log_std, -5, 0)
        std = torch.exp(log_std)
 
        return mu, std
@@ -61,13 +52,29 @@ class valueNet(torch.nn.Module):
         v = self.fc2(x)
         return v
     
+class PrivilegedEncoder(torch.nn.Module):
+    def __init__(self, env_dim, latent_dim = 8):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(env_dim, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, latent_dim)
+        )
+
+    def forward(self, entrinsic_state):
+        return self.net(entrinsic_state)
+
+
 class PPO:
-    def __init__(self, state_dim, env_dim, action_dim, hidden_dim, actor_lr,
+    def __init__(self, state_dim, env_dim, action_dim, hidden_dim, latent_dim,actor_lr,
                  critic_lr, gamma, lmbda, epochs, eps, device,
                  entropy_coef=1e-3):
-        self.actor = PolicyNetContinuous(state_dim, env_dim, action_dim, hidden_dim).to(device)
+        self.actor = PolicyNetContinuous(state_dim, latent_dim, action_dim, hidden_dim).to(device)
         self.critic = valueNet(state_dim, env_dim, hidden_dim).to(device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr = actor_lr)
+        self.privileged_encoder = PrivilegedEncoder(env_dim, latent_dim).to(device)
+        self.actor_optimizer = optim.Adam(list(self.actor.parameters()) + list(self.privileged_encoder.parameters()), lr = actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr = critic_lr)
         self.gamma = gamma
         self.lmbda = lmbda
@@ -83,40 +90,35 @@ class PPO:
         'critic': self.critic.state_dict(),
         'actor_optim': self.actor_optimizer.state_dict(),
         'critic_optim': self.critic_optimizer.state_dict(),
+        "privileged_encoder": self.privileged_encoder.state_dict()
         }, ckpt_path)
 
     def reload_model(self, ckpt_path="ppo_checkpoint.pth"):
         ckpt = torch.load(ckpt_path, map_location=self.device)
         self.actor.load_state_dict(ckpt['actor'])
+        self.privileged_encoder.load_state_dict(ckpt['privileged_encoder'])
         self.critic.load_state_dict(ckpt['critic'])
         self.actor_optimizer.load_state_dict(ckpt['actor_optim'])
         self.critic_optimizer.load_state_dict(ckpt['critic_optim'])
         return ckpt['episode'] + 1
 
-    def select_action(self, state, deterministic=False):
-        state = torch.as_tensor(
-            state, dtype=torch.float32, device=self.device
-        ).unsqueeze(0)
+    def select_action(self, state, env_info, deterministic=False):
+        state = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        env_info = torch.as_tensor(env_info, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
-            mu, std = self.actor(state)
+            z = self.privileged_encoder(env_info)
+            mu, std = self.actor(torch.cat((state, z), dim=-1))
             dist = torch.distributions.Normal(mu, std)
             raw_action = mu if deterministic else dist.sample()
             normalized_action = torch.tanh(raw_action)
             action = normalized_action * self.actor.action_scales
-            log_probs = self._squashed_log_prob(
-                dist, raw_action, normalized_action
-            )
+            log_probs = self._squashed_log_prob(dist, raw_action, normalized_action)
 
         return action.squeeze(0).cpu().numpy(), log_probs.item()
 
     def _squashed_log_prob(self, dist, raw_action, normalized_action):
-        jacobian = self.actor.action_scales * (
-            1.0 - normalized_action.pow(2)
-        )
-        return (
-            dist.log_prob(raw_action)
-            - torch.log(jacobian + 1e-6)
-        ).sum(dim=1)
+        jacobian = self.actor.action_scales * (1.0 - normalized_action.pow(2))
+        return (dist.log_prob(raw_action) - torch.log(jacobian + 1e-6)).sum(dim=1)
 
     def update(self, transition_dict):
         if not transition_dict["states"]:
@@ -127,6 +129,10 @@ class PPO:
 
         states = torch.as_tensor(
             np.asarray(transition_dict["states"]),
+            dtype=torch.float32, device=self.device
+        )
+        env_infos = torch.as_tensor(
+            np.asarray(transition_dict["env_infos"]),
             dtype=torch.float32, device=self.device
         )
         actions = torch.as_tensor(
@@ -140,6 +146,9 @@ class PPO:
             np.asarray(transition_dict["next_states"]),
             dtype=torch.float32, device=self.device
         )
+        terminateds = torch.as_tensor(
+            transition_dict["terminateds"], dtype=torch.float32, device=self.device
+        )
         dones = torch.as_tensor(
             transition_dict["dones"], dtype=torch.float32, device=self.device
         )
@@ -148,34 +157,25 @@ class PPO:
             dtype=torch.float32, device=self.device
         )
 
-        if states.ndim != 2 or states.shape[1] != self.critic.fc1.in_features:
-            raise ValueError(
-                f"Expected states with shape [N, {self.critic.fc1.in_features}], "
-                f"got {tuple(states.shape)}."
-            )
 
         # ========= GAE and lambda return =========
         with torch.no_grad():
-            values = self.critic(states).squeeze(-1)
-            next_values = self.critic(next_states).squeeze(-1)
-            td_targets = (
-                rewards + self.gamma * next_values * (1 - dones)
-            )
+            values = self.critic(torch.cat([states, env_infos], dim=-1)).squeeze(-1)
+            next_values = self.critic(torch.cat([next_states, env_infos], dim=-1)).squeeze(-1)
+            td_targets = (rewards + self.gamma * next_values * (1.0 - terminateds))
+
             td_deltas = td_targets - values
-            raw_advantages = compute_advantage(
-                self.gamma, self.lmbda, td_deltas
-            )
+
+            raw_advantages = compute_advantage(self.gamma, self.lmbda, td_deltas, dones)  # terminated or truncated
             returns = raw_advantages + values
 
         # Advantage normalization
-        advantages = (
-            raw_advantages - raw_advantages.mean()
-        ) / (raw_advantages.std(unbiased=False) + 1e-8)
+        advantages = ( raw_advantages - raw_advantages.mean()) / (raw_advantages.std(unbiased=False) + 1e-8)
 
         # ========= Critic Update =========
         critic_loss_total = 0.0
         for _ in range(self.epochs):
-            predicted_values = self.critic(states).squeeze(-1)
+            predicted_values = self.critic(torch.cat([states, env_infos], dim=-1)).squeeze(-1)
             critic_loss = F.mse_loss(predicted_values, returns)
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -188,7 +188,9 @@ class PPO:
         entropy_total: float = 0.0
 
         for _ in range(self.epochs):
-            mu, std = self.actor(states)
+            z = self.privileged_encoder(env_infos)
+            actor_inputs = torch.cat([states, z], dim=-1)
+            mu, std = self.actor(actor_inputs)
             dist = torch.distributions.Normal(mu, std)
             normalized_actions = torch.clamp(
                 actions / self.actor.action_scales,
@@ -206,20 +208,19 @@ class PPO:
             surr2: torch.Tensor = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
 
             entropy = dist.entropy().sum(dim=1).mean()
-            actor_loss = (
-                -torch.min(surr1, surr2).mean()
-                - self.entropy_coef * entropy
-            )
+            actor_loss = (-torch.min(surr1, surr2).mean() - self.entropy_coef * entropy)
 
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+            actor_and_encoder_parameters = (
+                list(self.actor.parameters())
+                + list(self.privileged_encoder.parameters())
+            )
+            torch.nn.utils.clip_grad_norm_(actor_and_encoder_parameters, 0.5)
             self.actor_optimizer.step()
 
             # ===== 统计指标 =====
-            clip_frac: torch.Tensor = (
-                (ratio > 1 + self.eps) | (ratio < 1 - self.eps)
-            ).float().mean()
+            clip_frac: torch.Tensor = ((ratio > 1 + self.eps) | (ratio < 1 - self.eps)).float().mean()
 
             clip_fraction_total += clip_frac.item()
             entropy_total += entropy.item()

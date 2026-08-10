@@ -27,21 +27,43 @@ def Normalize(state):
     training_state[2] = state[2] / 4
     return training_state
 
-def compute_advantage(gamma, lmbda, td_delta):
+# def compute_advantage(gamma, lmbda, td_delta):
 
-    advantages = []
-    advantage = 0.0
+#     advantages = []
+#     advantage = 0.0
 
-    for delta in reversed(td_delta):
+#     for delta in reversed(td_delta):
 
-        advantage = gamma * lmbda * advantage + delta
-        advantages.append(advantage)
+#         advantage = gamma * lmbda * advantage + delta
+#         advantages.append(advantage)
 
-    advantages.reverse()
+#     advantages.reverse()
 
-    return torch.stack(advantages).squeeze()
+#     return torch.stack(advantages).squeeze()
 
-def modify_run_all_par(v, mu, file_path):
+def compute_advantage(gamma, lmbda, td_delta, episode_ends):
+    td_delta = td_delta.detach().flatten()
+    episode_ends = episode_ends.detach().flatten()
+
+    advantages = torch.empty_like(td_delta)
+    advantage = torch.zeros(
+        (),
+        dtype=td_delta.dtype,
+        device=td_delta.device,
+    )
+
+    for index in range(td_delta.numel() - 1, -1, -1):
+        continuation = 1.0 - episode_ends[index]
+
+        advantage = (
+            td_delta[index]
+            + gamma * lmbda * continuation * advantage
+        )
+        advantages[index] = advantage
+
+    return advantages
+
+def modify_run_all_par(v, mu, m, Iz, file_path):
     with open(file_path, "r") as f:
         lines = f.readlines()
 
@@ -54,6 +76,12 @@ def modify_run_all_par(v, mu, file_path):
         # 修改路面附着
         elif re.match(r"\s*MU_ROAD_CONSTANT", line):
             new_lines.append(f"MU_ROAD_CONSTANT {mu}\n")
+
+        elif re.match(r"\s*M_SU", line):
+            new_lines.append(f"M_SU {m}\n")
+
+        elif re.match(r"\s*IZZ_SU", line):
+            new_lines.append(f"IZZ_SU {Iz}\n")
         
         else:
             new_lines.append(line)

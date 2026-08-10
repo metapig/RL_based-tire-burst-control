@@ -20,12 +20,15 @@ def _classify_episode_end(
     code: int,
     t_current: float,
     t_stop: float,
+    current_lateral_position: float,
+    current_yaw_angle: float,
     solver_error: bool = False,
 ):
     """Separate a true solver termination from a time-limit truncation."""
+    # good_game = abs(current_lateral_position) > 10.0 or abs(current_yaw_angle) > 60.0
     reached_time_limit = t_stop > 0.0 and t_current >= t_stop - 1e-9
     terminated = solver_error or (code != 0 and not reached_time_limit)
-    truncated = reached_time_limit and not solver_error
+    truncated = reached_time_limit and not terminated
     return terminated, truncated
 
 
@@ -98,8 +101,20 @@ class CarSimEnv:
         self.t_step = float(self.config.get("t_step", 0.0))
         
         if self.n_import <= 0 or self.n_export <= 0:
-            print(self.config)
-            raise RuntimeError("Configuration did not report valid import/export counts.")
+            details = ""
+            try:
+                if self.solver.dll_handle.vs_error_occurred():
+                    message = self.solver.dll_handle.vs_get_error_message()
+                    if message:
+                        if isinstance(message, bytes):
+                            message = message.decode("ascii", errors="ignore")
+                        details = f" CarSim error: {message}"
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Configuration did not report valid import/export counts."
+                f" Configuration: {self.config}.{details}"
+            )
 
         self.t_current = self.t_start
 
@@ -179,8 +194,16 @@ class CarSimEnv:
                 # than bootstrapping through a potentially invalid state.
                 solver_error = True
 
+        current_lateral_position = self.export_np[3]  # 当前的 lateral_position
+        current_yaw_angle = self.export_np[4]  # 当前的 yaw_angle
+
         terminated, truncated = _classify_episode_end(
-            code, self.t_current, t_stop, solver_error
+            code=code,
+            t_current=self.t_current,
+            t_stop=t_stop,
+            current_lateral_position=current_lateral_position,
+            current_yaw_angle=current_yaw_angle,
+            solver_error=solver_error,
         )
         info = {
             "return_code": code,
