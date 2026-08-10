@@ -4,20 +4,23 @@
   "levels": [
     0.25,
     0.5,
-    0.75
+    0.75,
+    1.0
   ],
-  "sources": {
-    "Fx": {
-      "normal": "D:\\CarSim2023\\Databases\\Tires\\Fx\\TireFx_e2eea0b6-a18f-49e9-acae-e78d4587afe6.par",
-      "full_burst": "D:\\CarSim2023\\Databases\\Tires\\Fx\\TireFx_59ff8167-24e0-484d-845e-6946e5597b34.par"
-    },
-    "Fy": {
-      "normal": "D:\\CarSim2023\\Databases\\Tires\\Fy\\TireFy_4a6a64d4-89b0-4460-b52b-6b8720461ac6.par",
-      "full_burst": "D:\\CarSim2023\\Databases\\Tires\\Fy\\TireFy_efd067b1-5b7f-406a-830a-324252abc172.par"
-    },
-    "Mz": {
-      "normal": "D:\\CarSim2023\\Databases\\Tires\\Mz\\TireMz_9147d723-8515-454c-a219-32675f79a027.par",
-      "full_burst": "D:\\CarSim2023\\Databases\\Tires\\Mz\\TireMz_c3c085d8-b8db-4f26-a6e4-032014e75fa1.par"
-    }
-  }
+  "normal_sources": {
+    "Fx": "D:\\CarSim2023\\Databases\\Tires\\Fx\\TireFx_e2eea0b6-a18f-49e9-acae-e78d4587afe6.par",
+    "Fy": "D:\\CarSim2023\\Databases\\Tires\\Fy\\TireFy_4a6a64d4-89b0-4460-b52b-6b8720461ac6.par",
+    "Mz": "D:\\CarSim2023\\Databases\\Tires\\Mz\\TireMz_9147d723-8515-454c-a219-32675f79a027.par"
+  },
+  "full_burst_sources": {
+    "Fx": "recovered from C:\\Users\\26967\\Desktop\\tire_burst\\generated_tire_tables\\burst_075\\Fx.csv at severity=0.75",
+    "Fy": "recovered from C:\\Users\\26967\\Desktop\\tire_burst\\generated_tire_tables\\burst_075\\Fy.csv at severity=0.75",
+    "Mz": "corrected from normal Mz: Mz_full_burst=0.25*Mz_normal"
+  },
+  "legacy_carsim_full_burst_datasets": {
+    "Fx": "D:\\CarSim2023\\Databases\\Tires\\Fx\\TireFx_59ff8167-24e0-484d-845e-6946e5597b34.par",
+    "Fy": "D:\\CarSim2023\\Databases\\Tires\\Fy\\TireFy_efd067b1-5b7f-406a-830a-324252abc172.par",
+    "Mz": "D:\\CarSim2023\\Databases\\Tires\\Mz\\TireMz_c3c085d8-b8db-4f26-a6e4-032014e75fa1.par"
+  },
+  "note": "The legacy full-burst CarSim datasets are runtime targets and may have been overwritten by an intermediate-severity episode."
 }
