@@ -2,55 +2,89 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
+from pathlib import Path
 from typing import Dict
 
 from src.models.parameters import ACTION_SCALES
 from src.utils.utils import compute_advantage
+from src.agents.history_encoder import CNN
 
 class PolicyNetContinuous(torch.nn.Module):
-    def __init__(self, state_dim, latent_dim, action_dim, hidden_dim=256):
-        super(PolicyNetContinuous, self).__init__()
-        self.fc = torch.nn.Linear(state_dim + latent_dim, hidden_dim)
-        self.fc_mu = torch.nn.Linear(hidden_dim, action_dim)
-        self.fc_std = torch.nn.Linear(hidden_dim, action_dim)
-
-        # ===== 隐藏层 =====
-        torch.nn.init.orthogonal_(self.fc.weight, gain=np.sqrt(2))
-        torch.nn.init.constant_(self.fc.bias, 0)
-
-        # ===== Mu 层（关键：小！！）=====
-        torch.nn.init.orthogonal_(self.fc_mu.weight, gain=0.0)
-        torch.nn.init.constant_(self.fc_mu.bias, 0)
-
-        # ===== Std 层（关键：不要大）=====
-        torch.nn.init.constant_(self.fc_std.weight, 0)
-        torch.nn.init.constant_(self.fc_std.bias, 0)
-
-        # Physical limits: steering angle and four wheel control moments.
-        self.register_buffer(
-            'action_scales', torch.tensor(ACTION_SCALES, dtype=torch.float32)
+    def __init__(self, state_dim, latent_dim, action_dim, hidden_dim=256,
+                 initial_std = 0.2, min_std = 0.03, max_std = 0.6):
+        super().__init__()
+        self.mean_net = torch.nn.Sequential(
+            torch.nn.Linear(state_dim + latent_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, action_dim)
         )
 
-    def forward(self, x):
-       x = F.relu(self.fc(x))
-       mu = self.fc_mu(x)
+        self.log_std = torch.nn.Parameter(torch.full((action_dim,), np.log(initial_std), dtype=torch.float32))
 
-       log_std = self.fc_std(x)
-       log_std = torch.clamp(log_std, -5, 0)
+        self.register_buffer("log_std_min", torch.full((action_dim,), np.log(min_std), dtype=torch.float32))
+        self.register_buffer("log_std_max", torch.full((action_dim,), np.log(max_std), dtype=torch.float32))
+        self.register_buffer("action_scales", torch.tensor(ACTION_SCALES, dtype=torch.float32))
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        linear_layers = [module for module in self.mean_net if isinstance(module, torch.nn.Linear)]
+
+        for layer in linear_layers[:-1]:
+            torch.nn.init.orthogonal_(layer.weight, gain=np.sqrt(2)) # 这里是为什么？
+            torch.nn.init.constant_(layer.bias, 0.0)
+
+        torch.nn.init.orthogonal_(linear_layers[-1].weight, gain = 0.01)
+        torch.nn.init.constant_(linear_layers[-1].bias, 0.0)
+
+    def forward(self, x):
+       mu = self.mean_net(x)
+
+       log_std = self.log_std.expand_as(mu)
        std = torch.exp(log_std)
 
        return mu, std
 
+    @torch.no_grad()
+    def constrain_std(self):
+        self.log_std.copy_(
+            torch.maximum(
+                torch.minimum(self.log_std, self.log_std_max),
+                self.log_std_min,
+            )
+        )
+
 class valueNet(torch.nn.Module):
     def __init__(self, state_dim, env_dim, hidden_dim):
-        super(valueNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim + env_dim, hidden_dim)
-        self.fc2 = torch.nn.Linear(hidden_dim, 1)
+        super().__init__()
+        self.valueNet = torch.nn.Sequential(
+            torch.nn.Linear(state_dim + env_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, 1)
+        )
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        linear_layers = [
+            module
+            for module in self.valueNet
+            if isinstance(module, torch.nn.Linear)
+        ]
+
+        for layer in linear_layers[:-1]:
+            torch.nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
+            torch.nn.init.constant_(layer.bias, 0.0)
+
+        torch.nn.init.orthogonal_(linear_layers[-1].weight, gain=1.0)
+        torch.nn.init.constant_(linear_layers[-1].bias, 0.0)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        v = self.fc2(x)
-        return v
+        return self.valueNet(x)
     
 class PrivilegedEncoder(torch.nn.Module):
     def __init__(self, env_dim, latent_dim = 8):
@@ -63,6 +97,19 @@ class PrivilegedEncoder(torch.nn.Module):
             torch.nn.Linear(64, latent_dim)
         )
 
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        linear_layers = [
+            module
+            for module in self.net
+            if isinstance(module, torch.nn.Linear)
+        ]
+
+        for layer in linear_layers:
+            torch.nn.init.orthogonal_(layer.weight, gain=1.0)
+            torch.nn.init.constant_(layer.bias, 0.0)
+
     def forward(self, entrinsic_state):
         return self.net(entrinsic_state)
 
@@ -70,12 +117,17 @@ class PrivilegedEncoder(torch.nn.Module):
 class PPO:
     def __init__(self, state_dim, env_dim, action_dim, hidden_dim, latent_dim,actor_lr,
                  critic_lr, gamma, lmbda, epochs, eps, device,
-                 entropy_coef=1e-3):
+                 entropy_coef=1e-4):
         self.actor = PolicyNetContinuous(state_dim, latent_dim, action_dim, hidden_dim).to(device)
         self.critic = valueNet(state_dim, env_dim, hidden_dim).to(device)
         self.privileged_encoder = PrivilegedEncoder(env_dim, latent_dim).to(device)
+        self.history_encoder = CNN(state_dim, latent_dim).to(device)
         self.actor_optimizer = optim.Adam(list(self.actor.parameters()) + list(self.privileged_encoder.parameters()), lr = actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr = critic_lr)
+        self.state_dim = state_dim
+        self.env_dim = env_dim
+        self.action_dim = action_dim
+        self.latent_dim = latent_dim
         self.gamma = gamma
         self.lmbda = lmbda
         self.epochs = epochs
@@ -84,6 +136,8 @@ class PPO:
         self.entropy_coef = entropy_coef
     
     def save_model(self, ckpt_path="ppo_checkpoint.pth", episode=0):
+        ckpt_path = Path(ckpt_path)
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({
         'episode': episode,
         'actor': self.actor.state_dict(),
@@ -94,7 +148,14 @@ class PPO:
         }, ckpt_path)
 
     def reload_model(self, ckpt_path="ppo_checkpoint.pth"):
-        ckpt = torch.load(ckpt_path, map_location=self.device)
+        try:
+            ckpt = torch.load(
+                ckpt_path,
+                map_location=self.device,
+                weights_only=False,
+            )
+        except TypeError:
+            ckpt = torch.load(ckpt_path, map_location=self.device)
         self.actor.load_state_dict(ckpt['actor'])
         self.privileged_encoder.load_state_dict(ckpt['privileged_encoder'])
         self.critic.load_state_dict(ckpt['critic'])
@@ -102,23 +163,65 @@ class PPO:
         self.critic_optimizer.load_state_dict(ckpt['critic_optim'])
         return ckpt['episode'] + 1
 
-    def select_action(self, state, env_info, deterministic=False):
-        state = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
-        env_info = torch.as_tensor(env_info, dtype=torch.float32, device=self.device).unsqueeze(0)
+    def _as_batch_tensor(self, value, expected_dim, name):
+        value = torch.as_tensor(
+            value, dtype=torch.float32, device=self.device
+        )
+        if value.ndim == 1:
+            value = value.unsqueeze(0)
+        if value.ndim != 2 or value.shape[-1] != expected_dim:
+            raise ValueError(
+                f"Expected {name} shape [B, {expected_dim}], got "
+                f"{tuple(value.shape)}."
+            )
+        return value
+
+    def encode_env_info(self, env_info):
+        env_info = self._as_batch_tensor(
+            env_info, self.env_dim, "env_info"
+        )
+        return self.privileged_encoder(env_info)
+
+    def predict_latent(self, history):
+        history = torch.as_tensor(
+            history, dtype=torch.float32, device=self.device
+        )
+        if history.ndim == 2:
+            history = history.unsqueeze(0)
+        return self.history_encoder(history)
+
+    def select_action_oracle(self, state, env_info, deterministic=False):
         with torch.no_grad():
-            z = self.privileged_encoder(env_info)
-            mu, std = self.actor(torch.cat((state, z), dim=-1))
+            z = self.encode_env_info(env_info)
+        return self.select_action_from_z(state, z, deterministic)
+
+    def select_action_adaptive(self, state, history, deterministic=False):
+        with torch.no_grad():
+            z_hat = self.predict_latent(history)
+        return self.select_action_from_z(state, z_hat, deterministic)
+
+    def select_action_from_z(self, state, z, deterministic=False):
+        state = self._as_batch_tensor(state, self.state_dim, "state")
+        z = self._as_batch_tensor(z, self.latent_dim, "z")
+
+        action_input = torch.cat((state, z), dim=-1)
+
+        with torch.no_grad():
+            mu, std = self.actor(action_input)
             dist = torch.distributions.Normal(mu, std)
             raw_action = mu if deterministic else dist.sample()
             normalized_action = torch.tanh(raw_action)
             action = normalized_action * self.actor.action_scales
-            log_probs = self._squashed_log_prob(dist, raw_action, normalized_action)
+            log_probs = self._squashed_log_prob(dist, raw_action)
 
-        return action.squeeze(0).cpu().numpy(), log_probs.item()
+        return action.squeeze(0).cpu().numpy(), log_probs.item(), raw_action.squeeze(0).cpu().numpy()
 
-    def _squashed_log_prob(self, dist, raw_action, normalized_action):
-        jacobian = self.actor.action_scales * (1.0 - normalized_action.pow(2))
-        return (dist.log_prob(raw_action) - torch.log(jacobian + 1e-6)).sum(dim=1)
+    def _squashed_log_prob(self, dist, raw_action):
+        gaussian_log_prob = dist.log_prob(raw_action)
+
+        log_tanh_jacobian = 2.0 * (np.log(2.0) - raw_action - F.softplus(-2.0 * raw_action))
+
+        return (gaussian_log_prob - log_tanh_jacobian - torch.log(self.actor.action_scales)).sum(dim=-1)
 
     def update(self, transition_dict):
         if not transition_dict["states"]:
@@ -139,6 +242,11 @@ class PPO:
             np.asarray(transition_dict["actions"]),
             dtype=torch.float32, device=self.device
         )
+        raw_actions = torch.as_tensor(
+            np.asarray(transition_dict["raw_actions"]),
+            dtype=torch.float32,
+            device=self.device,
+        )
         rewards = torch.as_tensor(
             transition_dict["rewards"], dtype=torch.float32, device=self.device
         )
@@ -156,7 +264,6 @@ class PPO:
             transition_dict["log_probs"],
             dtype=torch.float32, device=self.device
         )
-
 
         # ========= GAE and lambda return =========
         with torch.no_grad():
@@ -192,22 +299,17 @@ class PPO:
             actor_inputs = torch.cat([states, z], dim=-1)
             mu, std = self.actor(actor_inputs)
             dist = torch.distributions.Normal(mu, std)
-            normalized_actions = torch.clamp(
-                actions / self.actor.action_scales,
-                -1.0 + 1e-6,
-                1.0 - 1e-6,
-            )
-            raw_actions = torch.atanh(normalized_actions)
-            new_log_probs = self._squashed_log_prob(
-                dist, raw_actions, normalized_actions
-            )
+            new_log_probs = self._squashed_log_prob(dist, raw_actions)
             
-            ratio: torch.Tensor = torch.exp(new_log_probs - old_log_probs)
+            log_ratio = new_log_probs - old_log_probs
+            ratio = torch.exp(torch.clamp(log_ratio, -20.0, 20.0))
             # PPO clip ratio
             surr1: torch.Tensor = ratio * advantages
             surr2: torch.Tensor = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages
 
-            entropy = dist.entropy().sum(dim=1).mean()
+            entropy_raw_action = dist.rsample()
+            entropy_log_prob = self._squashed_log_prob(dist, entropy_raw_action)
+            entropy = -entropy_log_prob.mean()
             actor_loss = (-torch.min(surr1, surr2).mean() - self.entropy_coef * entropy)
 
             self.actor_optimizer.zero_grad()
@@ -218,6 +320,7 @@ class PPO:
             )
             torch.nn.utils.clip_grad_norm_(actor_and_encoder_parameters, 0.5)
             self.actor_optimizer.step()
+            self.actor.constrain_std()
 
             # ===== 统计指标 =====
             clip_frac: torch.Tensor = ((ratio > 1 + self.eps) | (ratio < 1 - self.eps)).float().mean()

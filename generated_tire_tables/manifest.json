@@ -13,8 +13,8 @@
     "Mz": "D:\\CarSim2023\\Databases\\Tires\\Mz\\TireMz_9147d723-8515-454c-a219-32675f79a027.par"
   },
   "full_burst_sources": {
-    "Fx": "recovered from C:\\Users\\26967\\Desktop\\tire_burst\\generated_tire_tables\\burst_075\\Fx.csv at severity=0.75",
-    "Fy": "recovered from C:\\Users\\26967\\Desktop\\tire_burst\\generated_tire_tables\\burst_075\\Fy.csv at severity=0.75",
+    "Fx": "recovered from generated_tire_tables/burst_075/Fx.csv at severity=0.75",
+    "Fy": "recovered from generated_tire_tables/burst_075/Fy.csv at severity=0.75",
     "Mz": "corrected from normal Mz: Mz_full_burst=0.25*Mz_normal"
   },
   "legacy_carsim_full_burst_datasets": {

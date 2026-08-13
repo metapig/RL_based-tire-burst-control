@@ -8,7 +8,7 @@ from src.utils.utils import modify_run_all_par, replace_tire_force_tables
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BURST_SEVERITY_LEVELS = (0.75, 0.50, 0.25)
+BURST_SEVERITY_LEVELS = (0.25, 0.5, 0.75, 1.0)
 BURST_TIRE_CODES = (0, 1, 2, 3)
 BURST_TIME = 2  # seconds after which the burst is applied
 
@@ -38,24 +38,38 @@ class TireBurstEnv(CarSimEnv):
             ),
         }
 
-    def reset(self, ep):
+    def reset(self, ep=0, curriculum_active=True, initial_params=None):
         par_path = r"D:\CarSim2023\Databases\Results\Run_60366987-856d-45b1-b359-7939e85af520\Run_all.par"
 
         # Focus most samples near the current difficulty boundary. A small
         # replay fraction keeps the policy from forgetting easier conditions.
-        self.curriculum_stage = int(np.log2( (ep+300) // 300) +1)
-        self.v_max = min(150.0, self.v_min + 20.0 * self.curriculum_stage)
-        self.mu_min = max(0.3, self.mu_max - 0.15 * self.curriculum_stage)
-        self.v = np.random.uniform(self.v_min, self.v_max)
-        self.mu = np.random.uniform(self.mu_min, self.mu_max)
-        self.m = np.random.uniform(1500, 2000)
-        self.Iz = self.m * 1.21
+        if initial_params is None:
+            if curriculum_active == True:
+                self.curriculum_stage = int(np.log2( (ep+300) // 300) +1)
+                self.v_max = min(150.0, self.v_min + 20.0 * self.curriculum_stage)
+                self.mu_min = max(0.3, self.mu_max - 0.15 * self.curriculum_stage)
+                self.burst_severity = float(np.random.choice(BURST_SEVERITY_LEVELS[:self.curriculum_stage]))
+
+            else:
+                self.v_max = 150.0
+                self.mu_min = 0.3
+                self.burst_severity = float(np.random.choice(BURST_SEVERITY_LEVELS))
+            self.v = np.random.uniform(self.v_min, self.v_max)
+            self.mu = np.random.uniform(self.mu_min, self.mu_max)
+            self.m = np.random.uniform(1500, 2000)
+            self.Iz = self.m * 1.21
+            self.burst_tire = ep % 4
+        else:
+            self.v = initial_params["v"]
+            self.mu = initial_params["mu"]
+            self.m = initial_params["m"]
+            self.Iz = initial_params.get("Iz", self.m * 1.21)
+            self.burst_severity = initial_params["burst_severity"]
+            self.burst_tire = initial_params["burst_tire"]
 
         normalized_mu = (self.mu - 0.65) / 0.35
         normalized_m = (self.m - 1500.0) / 500.0
 
-        self.burst_tire = ep % 4
-        self.burst_severity = float(np.random.choice(BURST_SEVERITY_LEVELS[:self.curriculum_stage]))
         self.burst_active = False
         self.burst_info = np.zeros(4)
         self.burst_info[self.burst_tire] = self.burst_severity

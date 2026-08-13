@@ -118,11 +118,15 @@ class MarkovStateTests(unittest.TestCase):
         )
         states = [np.zeros(STATE_DIM, dtype=np.float32) for _ in range(8)]
         actions = []
+        raw_actions = []
         log_probs = []
         env_infos = [np.zeros(6, dtype=np.float32) for _ in states]
         for state, env_info in zip(states, env_infos):
-            action, log_prob = agent.select_action(state, env_info)
+            action, log_prob, raw_action = agent.select_action_oracle(
+                state, env_info
+            )
             actions.append(action)
+            raw_actions.append(raw_action)
             log_probs.append(log_prob)
 
         metrics = agent.update(
@@ -130,6 +134,7 @@ class MarkovStateTests(unittest.TestCase):
                 "states": states,
                 "env_infos": env_infos,
                 "actions": actions,
+                "raw_actions": raw_actions,
                 "next_states": [state.copy() for state in states],
                 "rewards": [0.0] * len(states),
                 "terminateds": [False] * (len(states) - 1) + [True],

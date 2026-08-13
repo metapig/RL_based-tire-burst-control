@@ -1,25 +1,31 @@
 import argparse
+import time
+from pathlib import Path
+
 import numpy as np
 import torch
-import time
 from torch.utils.tensorboard import SummaryWriter
-from src.envs.tire_burst_env import TireBurstEnv
+
 from src.agents.PPO_agent import PPO
+from src.agents.history_encoder import AdaptationDataset, HistoryBuffer
+from src.envs.tire_burst_env import TireBurstEnv
 from src.models.state_model import STATE_DIM, build_state
-from src.utils.utils import set_seed
 
 
 ACTION_NAMES = ("steer", "L1", "R1", "L2", "R2")
 
+
 def log_action(writer, action, step, prefix="Action"):
     for name, value in zip(ACTION_NAMES, action):
         writer.add_scalar(f"{prefix}/{name}", float(value), step)
+
 
 def make_transition_dict():
     return {
         "states": [],
         "env_infos": [],
         "actions": [],
+        "raw_actions": [],
         "next_states": [],
         "rewards": [],
         "terminateds": [],
@@ -27,92 +33,83 @@ def make_transition_dict():
         "log_probs": [],
     }
 
+
 def initialize():
-    p = argparse.ArgumentParser(description="PPO training for tire burst control")
-    p.add_argument(
+    parser = argparse.ArgumentParser(
+        description="PPO training for tire burst control"
+    )
+    parser.add_argument(
         "--mode",
-        choices=("train", "resume", "test"),
+        choices=(
+            "train",
+            "resume",
+            "test",
+            "collect_history_data",
+            "test_history_encoder",
+        ),
         default="train",
-        help="start fresh training, resume from a checkpoint, or test",
     )
-    p.add_argument("--actor_learning_rate", type=float, default=1e-4, help="Learning rate for PPO agent")
-    p.add_argument("--critic_learning_rate", type=float, default=1e-3, help="Learning rate for PPO agent")
-    p.add_argument("--gamma", type=float, default=0.995, help="Discount factor for PPO agent")
-    p.add_argument("--lmbda", type=float, default=0.95, help="GAE lambda for PPO agent")
-    p.add_argument("--eps_clip", type=float, default=0.2, help="Clipping epsilon for PPO agent")
-    p.add_argument("--K_epochs", type=int, default=4, help="Number of epochs for PPO update")
-    p.add_argument("--entropy_coef", type=float, default=1e-3, help="Entropy bonus coefficient")
-    p.add_argument(
-        "--max_episodes",
-        type=int,
-        default=1000,
-        help="Number of episodes to run in this invocation",
-    )
-    p.add_argument("--checkpoint_interval", type=int, default=100, help="Episodes between checkpoints")
-    p.add_argument("--checkpoint", default="ppo_checkpoint_latent.pth", help="Checkpoint path")
-    return p.parse_args()
+    parser.add_argument("--actor_learning_rate", type=float, default=3e-4)
+    parser.add_argument("--critic_learning_rate", type=float, default=1e-3)
+    parser.add_argument("--gamma", type=float, default=0.995)
+    parser.add_argument("--lmbda", type=float, default=0.95)
+    parser.add_argument("--eps_clip", type=float, default=0.2)
+    parser.add_argument("--K_epochs", type=int, default=3)
+    parser.add_argument("--entropy_coef", type=float, default=1e-4)
+    parser.add_argument("--max_episodes", type=int, default=4000)
+    parser.add_argument("--adaptation_episodes", type=int, default=100)
+    parser.add_argument("--checkpoint_interval", type=int, default=100)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--dataset")
+    parser.add_argument("--history_checkpoint")
+    return parser.parse_args()
 
 
 def test(env, agent, inner_steps_per_control=1):
-    writer = SummaryWriter(f"runs/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
     agent.actor.eval()
     agent.privileged_encoder.eval()
-    agent.critic.eval()
-
-    obs, env_info = env.reset(0)
-    previous_action = np.zeros(5, dtype=np.float32)
-    state = build_state(obs, previous_action, target_vx=obs[0])
+    obs, env_info = env.reset(0, curriculum_active=False)
+    state = build_state(
+        obs, np.zeros(5, dtype=np.float32), target_vx=obs[0]
+    )
     episode_return = 0.0
     done = False
-    control_step = 0
 
     while not done:
-        # if obs[5] != 4:
-        #     action, _ = agent.select_action(state, deterministic=True)
-        #     log_action(writer, action, control_step, prefix="Action_test")
-        # else:
-        action = np.zeros(5, dtype=np.float32)
-
-        next_obs, env_info, reward, done, info = env.step(action, inner_steps_per_control)
-        obs = next_obs
-        previous_action = action
-        target_vx = env.target_vx if env.burst_active else obs[0]
-        state = build_state(obs, previous_action, target_vx=target_vx)
+        if env.burst_active:
+            action, _, _ = agent.select_action_oracle(
+                state, env_info, deterministic=True
+            )
+        else:
+            action = np.zeros(5, dtype=np.float32)
+        next_obs, env_info, reward, done, _ = env.step(
+            action, inner_steps_per_control
+        )
+        target_vx = env.target_vx if env.burst_active else next_obs[0]
+        state = build_state(next_obs, action, target_vx=target_vx)
         episode_return += reward
-        control_step += 1
 
-    print(f"Test episode - Return: {episode_return:.3f}")
-    writer.close()
+    print(f"Oracle test return: {episode_return:.3f}")
 
 
-def train(
-    env,
-    agent,
-    num_episodes,
-    inner_steps_per_control=1,
+def train(env, agent, num_episodes, inner_steps_per_control=1,
     checkpoint_interval=100,
     checkpoint_path="ppo_checkpoint_latent.pth",
     start_episode=0,
 ):
-    if num_episodes <= 0:
-        raise ValueError("num_episodes must be positive.")
-    if start_episode < 0:
-        raise ValueError("start_episode must be non-negative.")
-
-    writer = SummaryWriter(f"runs/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
-    return_list = []
+    writer = SummaryWriter(f"runs/ppo_v3/ppo_tireburst_{time.strftime('%Y%m%d-%H%M%S')}")
     global_control_step = 0
     agent.actor.train()
     agent.privileged_encoder.train()
     agent.critic.train()
-
     transition_dict = make_transition_dict()
     end_episode = start_episode + num_episodes
 
-    for ep in range(start_episode, end_episode):
-        obs, env_info = env.reset(ep)
-        previous_action = np.zeros(5, dtype=np.float32)
-        state = build_state(obs, previous_action, target_vx=obs[0])
+    for episode in range(start_episode, end_episode):
+        obs, env_info = env.reset(episode)
+        state = build_state(
+            obs, np.zeros(5, dtype=np.float32), target_vx=obs[0]
+        )
         episode_return = 0.0
         done = False
         metrics = None
@@ -125,17 +122,18 @@ def train(
             "terminal": 0.0,
         }
 
-
         while not done:
             policy_controlled = env.burst_active
             if policy_controlled:
-                action, log_prob = agent.select_action(state, env_info)
+                action, log_prob, raw_action = agent.select_action_oracle(state, env_info)
                 log_action(writer, action, global_control_step)
             else:
                 action = np.zeros(5, dtype=np.float32)
                 log_prob = None
 
-            next_obs, env_info, reward, done, info = env.step(action, inner_steps_per_control)
+            next_obs, env_info, reward, done, info = env.step(
+                action, inner_steps_per_control
+            )
             target_vx = env.target_vx if env.burst_active else next_obs[0]
             next_state = build_state(next_obs, action, target_vx=target_vx)
             episode_return += reward
@@ -146,47 +144,142 @@ def train(
                 transition_dict["states"].append(state)
                 transition_dict["env_infos"].append(env_info)
                 transition_dict["actions"].append(action.copy())
+                transition_dict["raw_actions"].append(raw_action.copy())
                 transition_dict["next_states"].append(next_state)
                 transition_dict["rewards"].append(reward)
                 transition_dict["terminateds"].append(info["terminated"])
                 transition_dict["dones"].append(done)
                 transition_dict["log_probs"].append(log_prob)
 
-            obs = next_obs
             state = next_state
-            previous_action = action
             global_control_step += 1
 
-        return_list.append(episode_return)
-        writer.add_scalar("Reward/Episode_Return", episode_return, ep)
+        writer.add_scalar("Reward/Episode_Return", episode_return, episode)
         for name, value in reward_sums.items():
-            writer.add_scalar(f"RewardComponent/{name}", value, ep)
+            writer.add_scalar(f"RewardComponent/{name}", value, episode)
 
-        print(f"Episode {ep+1}/{end_episode} - Return: {episode_return:.3f}")
+        print(
+            f"Episode {episode + 1}/{end_episode} - "
+            f"Return: {episode_return:.3f}"
+        )
 
-        episodes_collected = ep - start_episode + 1
-        if episodes_collected % 4 == 0:
+        if (episode - start_episode + 1) % 4 == 0:
             metrics = agent.update(transition_dict)
             transition_dict = make_transition_dict()
         if metrics is not None:
-            writer.add_scalar("Loss/Actor", metrics["actor_loss"], ep)
-            writer.add_scalar("Loss/Critic", metrics["critic_loss"], ep)
-            writer.add_scalar("Policy/Entropy", metrics["entropy"], ep)
-            writer.add_scalar("Policy/ClipFrac", metrics["clip_frac"], ep)
-            writer.add_scalar("Policy/NormalizedStd", metrics["normalized_std"], ep)
-
+            writer.add_scalar("Loss/Actor", metrics["actor_loss"], episode)
+            writer.add_scalar("Loss/Critic", metrics["critic_loss"], episode)
+            writer.add_scalar("Policy/Entropy", metrics["entropy"], episode)
+            writer.add_scalar("Policy/ClipFrac", metrics["clip_frac"], episode)
+            writer.add_scalar(
+                "Policy/NormalizedStd", metrics["normalized_std"], episode
+            )
         writer.flush()
-        if checkpoint_interval > 0 and (ep + 1) % checkpoint_interval == 0:
-            agent.save_model(checkpoint_path, episode=ep)
+
+        if checkpoint_interval > 0 and (episode + 1) % checkpoint_interval == 0:
+            agent.save_model(checkpoint_path, episode=episode)
 
     writer.close()
     return end_episode - 1
 
 
+def collect_history_data(env, agent, dataset_path, inner_steps_per_control=1, num_episodes=500,):
+    agent.actor.eval()
+    agent.privileged_encoder.eval()
+    agent.history_encoder.eval()
+    histories = []
+    labels = []
+
+    for episode in range(num_episodes):
+        obs, env_info = env.reset(episode, curriculum_active=False)
+        state = build_state(
+            obs, np.zeros(5, dtype=np.float32), target_vx=obs[0]
+        )
+        history_buffer = HistoryBuffer(maxlen=25)
+        history_buffer.reset(state)
+        done = False
+
+        while not done:
+            policy_controlled = env.burst_active
+            history = history_buffer.as_array()
+            if policy_controlled:
+                action, _, _ = agent.select_action_oracle(state, env_info)
+                with torch.no_grad():
+                    target_z = (agent.encode_env_info(env_info).squeeze(0).cpu().numpy())
+            else:
+                action = np.zeros(5, dtype=np.float32)
+
+            next_obs, env_info, _, done, _ = env.step(
+                action, inner_steps_per_control
+            )
+            target_vx = env.target_vx if env.burst_active else next_obs[0]
+            next_state = build_state(next_obs, action, target_vx=target_vx)
+
+            if policy_controlled:
+                histories.append(history.copy())
+                labels.append(target_z.copy())
+
+            history_buffer.append(next_state)
+            state = next_state
+
+        print(f"Collected episode {episode + 1}/{num_episodes}")
+
+    dataset = AdaptationDataset(histories, labels)
+    dataset.save(dataset_path)
+    print(f"Saved {len(dataset)} samples to {dataset_path}")
+
+
+def test_history_encoder(env, agent, inner_steps_per_control=1, num_episodes=1):
+    agent.actor.eval()
+    agent.privileged_encoder.eval()
+    agent.history_encoder.eval()
+
+    for episode in range(num_episodes):
+        obs, env_info = env.reset(episode, curriculum_active=False)
+        state = build_state(
+            obs, np.zeros(5, dtype=np.float32), target_vx=obs[0]
+        )
+        history_buffer = HistoryBuffer(maxlen=25)
+        history_buffer.reset(state)
+        done = False
+        episode_return = 0.0
+
+        while not done:
+            if env.burst_active:
+                action, _, _ = agent.select_action_adaptive(
+                    state, history_buffer.as_array(), deterministic=True
+                )
+            else:
+                action = np.zeros(5, dtype=np.float32)
+
+            next_obs, env_info, reward, done, _ = env.step(
+                action, inner_steps_per_control
+            )
+            target_vx = env.target_vx if env.burst_active else next_obs[0]
+            next_state = build_state(next_obs, action, target_vx=target_vx)
+            history_buffer.append(next_state)
+            state = next_state
+            episode_return += reward
+
+        print(
+            f"Adaptive test episode {episode + 1}/{num_episodes}: "
+            f"return={episode_return:.3f}"
+        )
+
+
+def load_history_encoder(agent, checkpoint):
+    try:
+        state_dict = torch.load(
+            checkpoint, map_location=agent.device, weights_only=True
+        )
+    except TypeError:
+        state_dict = torch.load(checkpoint, map_location=agent.device)
+    agent.history_encoder.load_state_dict(state_dict)
+
+
 if __name__ == "__main__":
-    # set_seed(7)
-    env = TireBurstEnv(sim_path="./simfile.sim")
     args = initialize()
+    env = TireBurstEnv(sim_path="./simfile.sim")
     agent = PPO(
         state_dim=STATE_DIM,
         env_dim=6,
@@ -202,11 +295,10 @@ if __name__ == "__main__":
         device=torch.device("cuda") if torch.cuda.is_available() else "cpu",
         entropy_coef=args.entropy_coef,
     )
-
     inner_steps_per_control = 20
 
     if args.mode == "test":
-        # agent.reload_model(args.checkpoint)
+        agent.reload_model(args.checkpoint)
         test(env, agent, inner_steps_per_control)
 
     elif args.mode in ("train", "resume"):
@@ -217,7 +309,6 @@ if __name__ == "__main__":
                 f"Resuming from {args.checkpoint}: "
                 f"next curriculum episode is {start_episode}."
             )
-
         last_episode = train(
             env,
             agent,
@@ -228,3 +319,29 @@ if __name__ == "__main__":
             start_episode=start_episode,
         )
         agent.save_model(args.checkpoint, episode=last_episode)
+
+    elif args.mode == "collect_history_data":
+        agent.reload_model(args.checkpoint)
+        if args.history_checkpoint and Path(args.history_checkpoint).is_file():
+            load_history_encoder(agent, args.history_checkpoint)
+        else:
+            print("History checkpoint not found; collecting with a random CNN.")
+        collect_history_data(
+            env,
+            agent,
+            args.dataset,
+            inner_steps_per_control,
+            num_episodes=args.adaptation_episodes,
+        )
+
+    elif args.mode == "test_history_encoder":
+        agent.reload_model(args.checkpoint)
+        load_history_encoder(agent, args.history_checkpoint)
+        test_history_encoder(
+            env,
+            agent,
+            inner_steps_per_control,
+            num_episodes=args.adaptation_episodes,
+        )
+
+    env.close()

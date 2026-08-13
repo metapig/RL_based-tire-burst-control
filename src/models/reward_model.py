@@ -23,16 +23,16 @@ def compute_reward(state, action, previous_action, burst_active, target_vx, info
 
     # CarSim units: km/h, deg/s, m, deg.
     speed_error = (vx - vx_target) / 10.0
-    vy_error = vy / 0.5
-    yaw_rate_error = yaw_rate / 5.0
-    lateral_error = lateral_position / 5.0
-    yaw_error = yaw_angle / 15.0
+    vy_error = vy
+    yaw_rate_error = yaw_rate / 2.0 # 5.0
+    lateral_error = lateral_position / 2.0 # 5.0
+    yaw_error = yaw_angle / 2.0 # 15
 
-    speed_cost = _smooth_l1(speed_error)
+    speed_cost =  _smooth_l1(speed_error)
 
     track_cost = (
-        2.5 * _smooth_l1(lateral_error)
-        + 2.5 * _smooth_l1(yaw_error)
+        4 * _smooth_l1(lateral_error)
+        + 3 * _smooth_l1(yaw_error)
     )
     stability_cost = (
         _smooth_l1(vy_error)
@@ -40,9 +40,9 @@ def compute_reward(state, action, previous_action, burst_active, target_vx, info
     )
 
     normalized_action = action / action_scales
-    control_cost = (
+    control_cost = 0.5 * (
         normalized_action[0] ** 2
-        + np.sum(normalized_action[1:] ** 2)
+        + 0.5 *np.sum(normalized_action[1:] ** 2)
     )
 
     smoothness_cost = 0.0
@@ -52,7 +52,7 @@ def compute_reward(state, action, previous_action, burst_active, target_vx, info
         ) / action_scales
         smoothness_cost = (
             normalized_delta[0] ** 2
-            + np.sum(normalized_delta[1:] ** 2)
+            + 0.5 * np.sum(normalized_delta[1:] ** 2)
         )
 
     terminal_penalty = 0.0

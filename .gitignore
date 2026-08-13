@@ -1,18 +1,43 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local agent/editor metadata
+.agents/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
 
 # tensorboard
 runs/
 
-# 模型
+# Models and generated datasets
+checkpoints/
+datasets/
 *.pth
 *.pt
+*.ckpt
+*.npz
+*.pkl
 
-# 日志
+# Logs
 *.log
 
-# 临时文件
+# Temporary files
 *.tmp
+*.bak
+*~
 
-# simfile
+# Local/proprietary CarSim artifacts
 *.sim
+*.par
+*.dll
